@@ -43,8 +43,13 @@ cat > "$PLIST" <<PLISTEOF
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Auto-restart only on a crash. A clean quit (menu "종료") stays quit,
+         so the user can turn it off without launchd immediately reviving it. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
 </dict>
