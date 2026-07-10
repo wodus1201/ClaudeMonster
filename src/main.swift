@@ -19,9 +19,7 @@ let PIXEL_FONT_NAME = "NeoDunggeunmo"
 // Self-update: we poll the GitHub Releases API and swap the .app bundle in place.
 // The release tag must be the version with a leading "v" (v1.1 ⇒ VERSION 1.1),
 // and the release must carry a ClaudeMonster.zip asset. ./release.sh does both.
-// REPO stays on the old slug until the GitHub repo itself is renamed — shipped
-// builds poll this URL, so it must keep resolving.
-let REPO = "wodus1201/ClaudeBattery"
+let REPO = "wodus1201/ClaudeMonster"
 let RELEASES_API = "https://api.github.com/repos/\(REPO)/releases/latest"
 let RELEASES_PAGE = "https://github.com/\(REPO)/releases/latest"
 let UPDATE_CHECK_INTERVAL: TimeInterval = 6 * 3600   // once every 6 hours
