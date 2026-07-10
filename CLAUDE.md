@@ -77,13 +77,17 @@ git push          # release.sh는 태그만 밀고 브랜치는 밀지 않는다
 (`fetchLatestRelease()`가 실패를 삼켜 위젯을 방해하지 않도록 설계됨).
 `gh release view v<VERSION>`으로 에셋이 붙었는지 확인할 것.
 
-## prototypes/
+## 배틀 화면
 
-본 앱에 아직 들어가지 않은 UI 실험. 리포 루트에서 실행한다(폰트를 상대경로로 읽음).
+위젯 좌클릭 시 내려오는 커스텀 패널. 우클릭은 기존 `NSMenu`를 띄운다 —
+패널이 깨져도 앱을 끌 수단이 남아야 하기 때문이다.
 
 ```bash
-swiftc -O prototypes/battle_spike.swift -o /tmp/battle_spike && /tmp/battle_spike
-/tmp/battle_spike --dump /tmp/preview.png    # 창 없이 PNG로
+CLAUDEMONSTER_BATTLE=/tmp/b.png ./build/ClaudeMonster.app/Contents/MacOS/ClaudeMonster
 ```
 
-현재 진행 중인 작업의 배경과 남은 일은 [docs/battle-ui.md](docs/battle-ui.md) 참고.
+창 없이 세 페이지를 한 PNG로 뽑는다. 스프라이트 그리드를 고쳤다면 행 수와 폭이
+균일한지 반드시 확인할 것 — 어긋나도 컴파일은 통과하고 렌더만 조용히 깨진다.
+
+메뉴 셀은 폭 여유가 1~2pt뿐이다. 항목 이름을 바꾸거나 패딩을 늘리기 전에
+[docs/battle-ui.md](docs/battle-ui.md)의 "레이아웃의 함정"을 읽을 것.
