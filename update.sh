@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Battery — update a source checkout (for developers).
+# Claude Monster — update a source checkout (for developers).
 #
 # Release users don't need this: the app checks GitHub Releases itself and
 # offers "새 버전 설치" in its menu. This pulls + rebuilds from source instead,
@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 SRC_DIR="$(pwd)"
-APP="$SRC_DIR/build/ClaudeBattery.app"
+APP="$SRC_DIR/build/ClaudeMonster.app"
 source "$SRC_DIR/lib.sh"
 
 echo "==> 1/3  Pulling latest code"
@@ -15,8 +15,7 @@ git pull --ff-only
 
 echo "==> 2/3  Rebuilding for this machine"
 # Stop the running instance first so the app bundle isn't file-locked mid-build.
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-pkill -x ClaudeBattery 2>/dev/null || true
+stop_all
 sleep 1
 ./build.sh
 

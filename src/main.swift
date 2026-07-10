@@ -2,7 +2,7 @@ import Cocoa
 import CoreText
 import ServiceManagement
 
-// ── Claude Battery ─────────────────────────────────────────────────────────
+// ── Claude Monster ─────────────────────────────────────────────────────────
 // Personal macOS menu-bar app showing your real Claude usage limits, using the
 // same source the IDE extension does: GET /api/oauth/usage with the OAuth token
 // Claude Code already stored in the macOS Keychain. No external deps.
@@ -18,7 +18,9 @@ let PIXEL_FONT_NAME = "NeoDunggeunmo"
 
 // Self-update: we poll the GitHub Releases API and swap the .app bundle in place.
 // The release tag must be the version with a leading "v" (v1.1 ⇒ VERSION 1.1),
-// and the release must carry a ClaudeBattery.zip asset. ./release.sh does both.
+// and the release must carry a ClaudeMonster.zip asset. ./release.sh does both.
+// REPO stays on the old slug until the GitHub repo itself is renamed — shipped
+// builds poll this URL, so it must keep resolving.
 let REPO = "wodus1201/ClaudeBattery"
 let RELEASES_API = "https://api.github.com/repos/\(REPO)/releases/latest"
 let RELEASES_PAGE = "https://github.com/\(REPO)/releases/latest"
@@ -26,6 +28,17 @@ let UPDATE_CHECK_INTERVAL: TimeInterval = 6 * 3600   // once every 6 hours
 
 /// This build's version, from Info.plist (injected by build.sh from ./VERSION).
 let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+
+/// Sentinel error meaning "no OAuth token in the Keychain" — i.e. Claude Code
+/// was never logged in on this Mac. It's the one failure the user can fix, so
+/// the menu answers it with instructions instead of a bare error line.
+let NO_TOKEN_ERROR = "로그인 토큰 없음"
+
+// The app was called "ClaudeBattery" before 1.2. These two names are HISTORICAL
+// — they identify what an older install left behind, not what we are now — so a
+// future rename must not touch them or the cleanup below silently stops working.
+let LEGACY_LAUNCH_AGENT_ID = "com.jay.ClaudeBattery"
+let LEGACY_PROCESS_NAME = "ClaudeBattery"
 
 // MARK: - Pixel font
 
@@ -280,7 +293,7 @@ func tokenFromCredentialsJSON(_ raw: String) -> String? {
 
 func fetchUsage(completion: @escaping (UsageResult) -> Void) {
     guard let token = readAccessToken() else {
-        completion(UsageResult(error: "로그인 토큰 없음"))
+        completion(UsageResult(error: NO_TOKEN_ERROR))
         return
     }
     guard let url = URL(string: API_URL) else {
@@ -428,7 +441,7 @@ func installUpdate(_ release: Release, completion: @escaping (Error?) -> Void) {
         guard let tmp = tmp else { completion(UpdateError.download("빈 응답")); return }
 
         let fm = FileManager.default
-        let work = fm.temporaryDirectory.appendingPathComponent("ClaudeBatteryUpdate-\(UUID().uuidString)")
+        let work = fm.temporaryDirectory.appendingPathComponent("ClaudeMonsterUpdate-\(UUID().uuidString)")
         do {
             try fm.createDirectory(at: work, withIntermediateDirectories: true)
             let zip = work.appendingPathComponent("update.zip")
@@ -459,14 +472,17 @@ func installUpdate(_ release: Release, completion: @escaping (Error?) -> Void) {
 /// relaunches. Detaching matters: it must outlive the process it replaces.
 private func writeAndRunSwapScript(newApp: URL, installedApp: URL, work: URL) throws {
     let script = work.appendingPathComponent("swap.sh")
+    // Wait on *our* process name rather than a hardcoded one, so a future
+    // rename can't leave the script watching for a process that never exits.
+    let proc = ProcessInfo.processInfo.processName
     let body = """
     #!/bin/bash
-    # Wait (up to ~10s) for ClaudeBattery to exit before touching its bundle.
+    # Wait (up to ~10s) for the running app to exit before touching its bundle.
     for _ in $(seq 1 100); do
-      pgrep -x ClaudeBattery >/dev/null || break
+      pgrep -x \(proc) >/dev/null || break
       sleep 0.1
     done
-    pkill -x ClaudeBattery 2>/dev/null || true
+    pkill -x \(proc) 2>/dev/null || true
     sleep 0.3
 
     # Keep the old bundle until the new one is in place, so a failure is recoverable.
@@ -593,9 +609,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerPixelFont()
 
-        // Debug: CLAUDEBATTERY_DUMP=<path> renders sample frames and exits.
-        if let dump = ProcessInfo.processInfo.environment["CLAUDEBATTERY_DUMP"] {
+        // Debug: CLAUDEMONSTER_DUMP=<path> renders sample frames and exits.
+        if let dump = ProcessInfo.processInfo.environment["CLAUDEMONSTER_DUMP"] {
             dumpSamples(to: dump); exit(0)
+        }
+        // Build hook: CLAUDEMONSTER_ICON=<path> renders the 1024px app icon and exits.
+        // make-icon.sh calls this, so the icon always matches the live sprite.
+        if let icon = ProcessInfo.processInfo.environment["CLAUDEMONSTER_ICON"] {
+            writeIconPNG(to: icon); exit(0)
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -613,17 +634,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.renderNow()
         }
 
-        // UI testing without hitting the network at all: CLAUDEBATTERY_MOCK=1
+        // UI testing without hitting the network at all: CLAUDEMONSTER_MOCK=1
         // feeds fake usage data straight in and never calls fetchUsage/refresh.
-        // Optional CLAUDEBATTERY_MOCK_PERCENT=NN overrides the session used%.
-        if ProcessInfo.processInfo.environment["CLAUDEBATTERY_MOCK"] != nil {
+        // Optional CLAUDEMONSTER_MOCK_PERCENT=NN overrides the session used%.
+        if ProcessInfo.processInfo.environment["CLAUDEMONSTER_MOCK"] != nil {
             isMocking = true
             applyMock()
             return
         }
-        retireLegacyLaunchAgent()
+        migrateLegacyPreferences()
+        retireLegacyInstall()
         refresh()
         scheduleUpdateChecks()
+
+        // After the widget is actually on screen, so "메뉴바에 나타났습니다" is true.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.showWelcomeIfFirstRun()
+        }
     }
 
     // MARK: - Self-update
@@ -701,6 +728,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         a.runModal()
     }
 
+    // MARK: - First-run onboarding
+
+    /// The widget lives only in the menu bar, so a first-time user gets no signal
+    /// that anything launched — and no hint that the two things it needs (a Claude
+    /// Code login, and auto-start) are opt-in. Say so once, then never again.
+    func showWelcomeIfFirstRun() {
+        let key = "didShowWelcome"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
+        let a = NSAlert()
+        a.messageText = "Claude Monster에 오신 걸 환영합니다!"
+        a.informativeText = """
+            메뉴바 오른쪽에 클로드가 나타났습니다. 남은 사용 한도를 HP로 보여주고, \
+            클로드를 클릭하면 쓰다듬을 수 있어요.
+
+            시작하려면 이 맥에서 Claude Code에 로그인돼 있어야 합니다. \
+            (터미널에서 claude 를 실행해 로그인하세요.)
+
+            로그인이 돼 있다면 곧 Keychain 접근을 물어봅니다 — "항상 허용"을 눌러주세요.
+            """
+        a.addButton(withTitle: "로그인 시 자동 시작 켜기")
+        a.addButton(withTitle: "나중에")
+        NSApp.activate(ignoringOtherApps: true)
+
+        if a.runModal() == .alertFirstButtonReturn, !launchAtLogin {
+            do { try SMAppService.mainApp.register() }
+            catch { alert("자동 시작 설정 실패", error.localizedDescription) }
+            rebuildMenu()
+        }
+    }
+
+    /// Menu action: shown when the Keychain has no Claude Code token.
+    @objc func showLoginHelp() {
+        let a = NSAlert()
+        a.messageText = "Claude Code에 로그인하세요"
+        a.informativeText = """
+            이 위젯은 Claude Code가 Keychain에 저장해 둔 로그인 토큰을 읽어 \
+            사용 한도를 가져옵니다. 토큰을 외부로 보내지 않습니다.
+
+            1. 터미널을 엽니다
+            2. claude 를 실행하고 안내에 따라 로그인합니다
+            3. 이 메뉴에서 "다시 시도"를 누릅니다
+
+            Claude Code가 설치돼 있지 않다면 claude.com/claude-code 를 참고하세요.
+            """
+        a.addButton(withTitle: "확인")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
     // MARK: - Launch at login
 
     /// Whether macOS currently launches us at login (SMAppService, macOS 13+).
@@ -716,19 +794,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// install.sh (pre-1.1) registered a LaunchAgent that starts the binary in
-    /// the source tree. Left in place it fights SMAppService and launches a
-    /// second copy, so retire it and carry its auto-start intent over to
-    /// SMAppService — the user shouldn't silently lose launch-at-login.
-    func retireLegacyLaunchAgent() {
+    /// UserDefaults are keyed by bundle ID, so the 1.2 rename orphaned the old
+    /// app's preferences. Carry them over once rather than silently resetting
+    /// the user's compact-mode and tracked-limit choices.
+    func migrateLegacyPreferences() {
+        let defaults = UserDefaults.standard
+        let key = "didMigrateLegacyPrefs"
+        guard !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
+
+        guard let old = UserDefaults(suiteName: LEGACY_LAUNCH_AGENT_ID) else { return }
+        if let kind = old.string(forKey: "selectedKind") {
+            defaults.set(kind, forKey: "selectedKind")
+            selectedKind = kind
+        }
+        if let compactPref = old.object(forKey: "compact") as? Bool {
+            defaults.set(compactPref, forKey: "compact")
+            compact = compactPref
+        }
+    }
+
+    /// Retire what a pre-1.2 "ClaudeBattery" install left behind: a LaunchAgent
+    /// that starts the old binary, and possibly that binary still running. Both
+    /// would sit alongside us — the agent fights SMAppService, and the old
+    /// process puts a second widget in the menu bar.
+    func retireLegacyInstall() {
+        // Kill a still-running old build first; it has a different executable
+        // name, so nothing else would ever reap it.
+        if Bundle.main.executableURL?.lastPathComponent != LEGACY_PROCESS_NAME {
+            let kill = Process()
+            kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            kill.arguments = ["-x", LEGACY_PROCESS_NAME]
+            try? kill.run()
+            kill.waitUntilExit()
+        }
+
         let plist = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.jay.ClaudeBattery.plist")
+            .appendingPathComponent("Library/LaunchAgents/\(LEGACY_LAUNCH_AGENT_ID).plist")
         guard FileManager.default.fileExists(atPath: plist.path) else { return }
 
         let uid = getuid()
         let boot = Process()
         boot.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        boot.arguments = ["bootout", "gui/\(uid)/com.jay.ClaudeBattery"]
+        boot.arguments = ["bootout", "gui/\(uid)/\(LEGACY_LAUNCH_AGENT_ID)"]
         try? boot.run()
         boot.waitUntilExit()
         try? FileManager.default.removeItem(at: plist)
@@ -749,7 +857,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// while isMocking, so no timer ever fires a real fetchUsage()).
     func applyMock() {
         let env = ProcessInfo.processInfo.environment
-        let sessionPct = Int(env["CLAUDEBATTERY_MOCK_PERCENT"] ?? "") ?? 41
+        let sessionPct = Int(env["CLAUDEMONSTER_MOCK_PERCENT"] ?? "") ?? 41
         let now = Date()
         var mock = UsageResult()
         mock.limits = [
@@ -1217,12 +1325,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func errorMenu(_ msg: String, showCompactToggle: Bool = false) -> NSMenu {
         let menu = NSMenu()
-        let item = NSMenuItem(title: "오류: \(msg)", action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        menu.addItem(item)
-        let hint = NSMenuItem(title: "Claude Code에 로그인돼 있는지 확인하세요", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
-        menu.addItem(hint)
+
+        if msg == NO_TOKEN_ERROR {
+            // Not really an error from the user's side — they just haven't logged
+            // in yet. Say what to do, and offer the how.
+            let item = NSMenuItem(title: "Claude Code에 로그인이 필요합니다", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            let how = NSMenuItem(title: "로그인하는 방법 보기…",
+                                 action: #selector(showLoginHelp), keyEquivalent: "")
+            how.target = self
+            menu.addItem(how)
+        } else {
+            let item = NSMenuItem(title: "오류: \(msg)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            let hint = NSMenuItem(title: "Claude Code에 로그인돼 있는지 확인하세요", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
         menu.addItem(.separator())
         if showCompactToggle {
             let compactItem = NSMenuItem(title: "간결 모드 (메뉴바 폭 줄이기)",
@@ -1240,6 +1361,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refreshNow() { isMocking ? applyMock() : refresh() }
+
+    /// Render the app icon from the same pixel grid the widget uses, so the icon
+    /// can never drift from the sprite. make-icon.sh turns this into a .icns.
+    func writeIconPNG(to path: String) {
+        let side: CGFloat = 1024
+        let grid = spriteGrids[.happy]![0]     // the smiling face reads best small
+        let cols = CGFloat(grid[0].count), rows = CGFloat(grid.count)
+
+        // Fit the sprite into ~66% of the canvas, keeping pixels square, then
+        // center it. macOS icons want visible breathing room at the edges.
+        let cell = (side * 0.66 / max(cols, rows)).rounded(.down)
+        let w = cols * cell, h = rows * cell
+
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            // Rounded-square backdrop in Claude's cream, matching the widget pill.
+            let inset = rect.insetBy(dx: side * 0.06, dy: side * 0.06)
+            NSColor(srgbRed: 0.96, green: 0.94, blue: 0.90, alpha: 1).setFill()
+            NSBezierPath(roundedRect: inset, xRadius: side * 0.18, yRadius: side * 0.18).fill()
+
+            drawSprite(grid,
+                       origin: NSPoint(x: (side - w) / 2, y: (side - h) / 2),
+                       cell: cell)
+            return true
+        }
+        guard let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+    }
 
     /// Debug helper: stack sample widgets (varied HP + a mid-crossfade frame) into one PNG.
     func dumpSamples(to path: String) {

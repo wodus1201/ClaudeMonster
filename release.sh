@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Battery — cut a release that the in-app updater can consume.
+# Claude Monster — cut a release that the in-app updater can consume.
 #
 # Builds a universal .app, zips it, and publishes it as a GitHub Release whose
 # tag is "v<VERSION>". The app compares its own CFBundleShortVersionString
@@ -12,8 +12,8 @@ cd "$(dirname "$0")"
 
 VERSION="$(cat VERSION)"
 TAG="v$VERSION"
-APP="build/ClaudeBattery.app"
-ZIP="build/ClaudeBattery.zip"
+APP="build/ClaudeMonster.app"
+ZIP="build/ClaudeMonster.zip"
 
 command -v gh >/dev/null 2>&1 || {
   echo "✗ GitHub CLI가 필요합니다:  brew install gh && gh auth login"; exit 1; }
@@ -27,7 +27,7 @@ fi
 echo "==> 2/5  Building universal (arm64 + x86_64)"
 UNIVERSAL=1 ./build.sh
 # Guard: a single-arch build here would silently ship a Mac-specific binary.
-archs="$(lipo -archs "$APP/Contents/MacOS/ClaudeBattery")"
+archs="$(lipo -archs "$APP/Contents/MacOS/ClaudeMonster")"
 case "$archs" in
   *arm64*x86_64*|*x86_64*arm64*) echo "    archs: $archs" ;;
   *) echo "✗ universal 빌드 실패 (archs: $archs)"; exit 1 ;;
@@ -38,12 +38,12 @@ rm -f "$ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
 echo "==> 4/5  Tagging $TAG"
-git tag -a "$TAG" -m "ClaudeBattery $VERSION"
+git tag -a "$TAG" -m "ClaudeMonster $VERSION"
 git push origin "$TAG"
 
 echo "==> 5/5  Publishing the GitHub Release"
 gh release create "$TAG" "$ZIP" \
-  --title "ClaudeBattery $VERSION" \
+  --title "ClaudeMonster $VERSION" \
   --generate-notes
 
 echo ""
