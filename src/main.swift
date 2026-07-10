@@ -109,15 +109,25 @@ func pettingLines(mood: Mood) -> [String] {
 /// How long a petting reaction stays on screen before the normal slot cycle resumes.
 let PETTING_HOLD: TimeInterval = 3.0
 
-/// Korean "time until the Pokémon Center" (i.e. until the limit resets).
+/// Shown instead of a countdown when the limit has no `resets_at`. The API omits
+/// it for a limit whose window hasn't opened yet (nothing used ⇒ nothing to
+/// reset), e.g. weekly_scoped before its first request. There is no arrival to
+/// wait for, so say we're already there.
+let ARRIVED_MESSAGE = "포켓몬센터 도착!"
+
+/// The dialogue slot's countdown line: "time until the Pokémon Center" (i.e.
+/// until the tracked limit resets). Returns the whole line, not just the
+/// duration, because the no-countdown case drops the prefix entirely.
 func resetKorean(_ date: Date?) -> String {
-    guard let date = date else { return "알 수 없음" }
+    guard let date = date else { return ARRIVED_MESSAGE }
     let secs = Int(date.timeIntervalSinceNow)
-    if secs <= 0 { return "곧 도착!" }
+    if secs <= 0 { return ARRIVED_MESSAGE }
     let d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60
-    if d > 0 { return "\(d)일 \(h)시간" }
-    if h > 0 { return "\(h)시간 \(m)분" }
-    return "\(m)분"
+    let left: String
+    if d > 0      { left = "\(d)일 \(h)시간" }
+    else if h > 0 { left = "\(h)시간 \(m)분" }
+    else          { left = "\(m)분" }
+    return "포켓몬센터까지 \(left)"
 }
 
 /// Every string the dialogue slot might ever display — used to reserve a fixed
@@ -127,6 +137,7 @@ func allSlotStrings() -> [String] {
     // Sprite-click reactions share the same slot, so reserve room for them too.
     s += [Mood.healthy, .tired, .hurt, .fainted].flatMap { pettingLines(mood: $0) }
     s.append(SLEEP_MESSAGE)
+    s.append(ARRIVED_MESSAGE)
     // Longest plausible countdown renderings.
     s += ["포켓몬센터까지 23시간 59분", "포켓몬센터까지 6일 23시간"]
     return s
@@ -863,8 +874,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   resetsAt: now.addingTimeInterval(3600 * 2 + 60 * 13), scopeName: nil, isActive: false),
             Limit(kind: "weekly_all", percent: 55,
                   resetsAt: now.addingTimeInterval(3600 * 24 * 3), scopeName: nil, isActive: true),
-            Limit(kind: "weekly_scoped", percent: 10,
-                  resetsAt: now.addingTimeInterval(3600 * 24 * 3), scopeName: "Fable", isActive: false),
+            // Mirrors what the API actually returns for an untouched scoped limit:
+            // nothing used, so its weekly window never opened and resets_at is null.
+            // That's the case the "포켓몬센터 도착!" line exists for — keep it here
+            // so mock mode can still reach it.
+            Limit(kind: "weekly_scoped", percent: 0,
+                  resetsAt: nil, scopeName: "Fable", isActive: false),
         ]
         apply(mock)
         // No real fetch loop is running, so nothing will call apply() again —
@@ -901,7 +916,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// briefly swapping to a flavor line, with a crossfade at each boundary.
     /// Returns (incoming, outgoing?, alpha 0..1 for incoming).
     func slotTexts(elapsed: TimeInterval, remaining: Int) -> (String, String?, CGFloat) {
-        let timeText = "포켓몬센터까지 " + resetKorean(driverResets)
+        let timeText = resetKorean(driverResets)
         let flavorText = flavorLine(remaining: remaining)
         let period = TIME_HOLD + FLAVOR_HOLD
         let ph = elapsed.truncatingRemainder(dividingBy: period)
