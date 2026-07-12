@@ -172,6 +172,61 @@ let spriteColorsFainted: [Character: NSColor] = [
     "M": NSColor(calibratedWhite: 0.30, alpha: 1),
 ]
 
+// MARK: - Claude skins (color customization)
+
+func rgb(_ r: Int, _ g: Int, _ b: Int) -> NSColor {
+    NSColor(srgbRed: CGFloat(r)/255, green: CGFloat(g)/255, blue: CGFloat(b)/255, alpha: 1)
+}
+
+/// A recolor of Claude. The sprite grids never change — only these three body
+/// tones do — so one skin applies identically to the menu-bar widget and the
+/// battle screen. `unlockPets > 0` gates a skin behind a petting count (the
+/// shiny), keeping it hidden until Claude has been petted that many times.
+struct ClawdSkin {
+    let id: String
+    let name: String
+    let highlight: NSColor   // battle shading 'L'
+    let base: NSColor        // body 'B'
+    let shadow: NSColor      // outline/shadow 'D'
+    var unlockPets: Int = 0
+
+    /// Widget sprite is 2-tone (B/D) over fixed face details (K/W/T/M).
+    var widgetColors: [Character: NSColor] {
+        var c = spriteColors
+        c["B"] = base
+        c["D"] = shadow
+        return c
+    }
+    /// Battle sprite is shaded into three tones (L/B/D) over a black outline.
+    var battleColors: [Character: NSColor] {
+        ["K": GB_INK, "L": highlight, "B": base, "D": shadow]
+    }
+}
+
+/// How many pets unlock the shiny.
+let PETS_TO_SHINY = 50
+
+/// Six variants, to fill a Pokémon-style party screen: the default, the shiny
+/// (locked), and one per model theme. Colors are original recolors of our own
+/// sprite, not taken from any existing game's data.
+let ALL_SKINS: [ClawdSkin] = [
+    ClawdSkin(id: "default", name: "클로드",
+              highlight: rgb(0xE8,0x9A,0x74), base: rgb(0xD9,0x77,0x57), shadow: rgb(0xA6,0x47,0x2E)),
+    ClawdSkin(id: "shiny", name: "이로치",
+              highlight: rgb(0xF7,0xE2,0xA0), base: rgb(0xF0,0xC2,0x52), shadow: rgb(0xBE,0x86,0x2E),
+              unlockPets: PETS_TO_SHINY),
+    ClawdSkin(id: "opus", name: "오퍼스",
+              highlight: rgb(0xB6,0x8C,0xDE), base: rgb(0x88,0x58,0xB0), shadow: rgb(0x57,0x30,0x80)),
+    ClawdSkin(id: "sonnet", name: "소네트",
+              highlight: rgb(0x7C,0xB2,0xEA), base: rgb(0x4A,0x82,0xC8), shadow: rgb(0x2C,0x54,0x90)),
+    ClawdSkin(id: "haiku", name: "하이쿠",
+              highlight: rgb(0x94,0xDA,0x94), base: rgb(0x58,0xB0,0x5A), shadow: rgb(0x30,0x80,0x36)),
+    ClawdSkin(id: "fable", name: "페이블",
+              highlight: rgb(0xF2,0xA2,0xCA), base: rgb(0xD8,0x60,0xA0), shadow: rgb(0xA0,0x38,0x70)),
+]
+
+func skin(id: String) -> ClawdSkin { ALL_SKINS.first { $0.id == id } ?? ALL_SKINS[0] }
+
 // Official-style Clawd: 20 cols x 14 rows. The body/ears/arms/legs are constant;
 // only the two eye rows (index 5,6) change per mood. Row 0 = top.
 let clawdBase: [String] = [
@@ -592,6 +647,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // instead of being pushed into the ">>" overflow. Default ON; togglable
     // from the click menu; persists across restarts.
     var compact: Bool = UserDefaults.standard.object(forKey: "compact") as? Bool ?? true
+    // Chosen Claude skin (color). Applies to both the widget and the battle
+    // screen; persists across restarts. The shiny is gated behind petCount.
+    var selectedSkinID: String = UserDefaults.standard.string(forKey: "clawdSkin") ?? "default"
+    var petCount: Int = UserDefaults.standard.integer(forKey: "petCount")
+    var currentSkin: ClawdSkin { skin(id: selectedSkinID) }
+    /// A skin is pickable if it has no unlock gate or the gate is met.
+    func isUnlocked(_ s: ClawdSkin) -> Bool { petCount >= s.unlockPets }
     var hasData = false
     var lastSignature = ""
 
@@ -613,7 +675,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Battle screen: the drop-down panel a left-click opens.
     var battlePanel: BattlePanel?
     var battleMonitor: Any?          // dismisses the panel on a click elsewhere
-    var escMonitor: Any?
 
     // Text-slot timing (seconds)
     let TIME_HOLD = 5.0             // how long the reset-countdown shows
@@ -1066,7 +1127,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let frames = spriteGrids[mood] ?? spriteGrids[.healthy]!
             let grid = (blink && frames.count > 1) ? frames[1] : frames[0]
             let spriteOrigin = NSPoint(x: x, y: midY - spriteH / 2 + bob)
-            let colors: [Character: NSColor] = remaining == 0 ? spriteColorsFainted : spriteColors
+            // Fainted stays grayscale regardless of skin; otherwise use the skin.
+            let colors: [Character: NSColor] = remaining == 0 ? spriteColorsFainted : self.currentSkin.widgetColors
             drawSprite(grid, origin: spriteOrigin, cell: cell, colors: colors)
             x += spriteW + spriteNameGap   // 스프라이트 ↔ 이름 간격
 
@@ -1234,10 +1296,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func openBattlePanel(_ button: NSStatusBarButton) {
         let view = BattleView(frame: NSRect(x: 0, y: 0, width: BATTLE_W, height: BATTLE_H),
                               usedPercent: driverUsed ?? 0, limits: lastLimits,
-                              selectedKind: selectedKind, compactOn: compact)
+                              selectedKind: selectedKind, compactOn: compact,
+                              skinID: selectedSkinID, petCount: petCount)
         view.perform = { [weak self, weak view] action in
             self?.runBattleAction(action, from: view)
         }
+        view.onDismiss = { [weak self] in self?.closeBattlePanel() }
 
         let panel = BattlePanel(contentRect: view.frame,
                                 styleMask: [.borderless, .nonactivatingPanel],
@@ -1277,15 +1341,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         battlePanel = panel
 
-        // NSPopover's .transient, by hand.
+        // NSPopover's .transient, by hand. Esc is handled inside the view, which
+        // steps back a page before dismissing (via onDismiss at the root).
         battleMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeBattlePanel()
-        }
-        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
-            guard ev.keyCode == 53 else { return ev }   // Esc
-            self?.closeBattlePanel()
-            return nil
         }
     }
 
@@ -1297,6 +1357,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .pickLimit(let kind):
             selectLimit(kind: kind)          // redraws the widget (Lv + HP)
             refreshBattleView(view)
+        case .pickSkin(let id):
+            selectSkin(id: id)               // recolors the widget
+            refreshBattleView(view)
+            view?.go(to: .root)              // back out of the picker after choosing
         case .toggleCompact:
             toggleCompact()                  // redraws the widget
             refreshBattleView(view)
@@ -1315,9 +1379,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .quit:
             closeBattlePanel()
             NSApp.terminate(nil)
-        case .openUsage, .openMore, .back, .none:
+        case .openUsage, .openMore, .openSkins, .back, .none:
             break                            // handled inside the view
         }
+    }
+
+    /// Switch the Claude skin; remember it. Redraws the widget immediately.
+    func selectSkin(id: String) {
+        selectedSkinID = id
+        UserDefaults.standard.set(id, forKey: "clawdSkin")
+        lastSignature = ""       // force the widget to repaint in the new color
+        renderNow()
     }
 
     /// Push the delegate's current state back into the open panel.
@@ -1327,12 +1399,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         view.limits = lastLimits
         view.selectedKind = selectedKind
         view.compactOn = compact
+        view.skinID = selectedSkinID
+        view.petCount = petCount
         view.needsDisplay = true
     }
 
     func closeBattlePanel() {
         if let m = battleMonitor { NSEvent.removeMonitor(m); battleMonitor = nil }
-        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         guard let panel = battlePanel else { return }
         // Clear the reference first: the animation outlives this call, and a
         // click landing mid-fade would otherwise toggle against a dying panel.
@@ -1343,7 +1416,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }, completionHandler: { panel.orderOut(nil) })
     }
 
-    /// Show the happy face + an affection line for PETTING_HOLD seconds.
+    /// Show the happy face + an affection line for PETTING_HOLD seconds. Each pet
+    /// counts toward unlocking the shiny skin; the count persists.
     func pet() {
         let remaining = max(0, min(100, 100 - (driverUsed ?? 0)))
         var pool = pettingLines(mood: mood(remaining: remaining))
@@ -1354,6 +1428,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         pettingUntil = Date().addingTimeInterval(PETTING_HOLD)
         lastSignature = ""      // force an immediate redraw
         renderNow()
+
+        let wasLocked = petCount < PETS_TO_SHINY
+        petCount += 1
+        UserDefaults.standard.set(petCount, forKey: "petCount")
+        if wasLocked && petCount >= PETS_TO_SHINY {
+            // Cross the threshold exactly once — tell the user the shiny appeared.
+            DispatchQueue.main.asyncAfter(deadline: .now() + PETTING_HOLD) { [weak self] in
+                self?.alert("이로치 클로드 해금!",
+                            "정성껏 쓰다듬어 줬네요. '색상 커스텀'에서 이로치 클로드를 고를 수 있어요.")
+            }
+        }
     }
 
     /// Switch which limit the widget tracks; remember the choice. Shared by the
@@ -1567,8 +1652,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Limit(kind: "weekly_scoped", percent: 0,
                   resetsAt: nil, scopeName: "Fable", isActive: false),
         ]
-        // All three menu pages, stacked, so a design change can be checked at once.
-        let pages: [BattleScreen] = [.root, .usage, .more]
+        // All menu pages, stacked, so a design change can be checked at once.
+        // The skin picker is shown with the shiny unlocked so its cell renders.
+        let pages: [BattleScreen] = [.root, .usage, .more, .skins]
         let gap: CGFloat = 10
         let size = NSSize(width: BATTLE_W, height: (BATTLE_H + gap) * CGFloat(pages.count) - gap)
         let img = NSImage(size: size, flipped: false) { rect in
@@ -1580,7 +1666,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             for page in pages {
                 let view = BattleView(frame: NSRect(x: 0, y: 0, width: BATTLE_W, height: BATTLE_H),
                                       usedPercent: usedPercent, limits: fixture,
-                                      selectedKind: "session", compactOn: true)
+                                      selectedKind: "session", compactOn: true,
+                                      skinID: "default", petCount: PETS_TO_SHINY)
                 view.go(to: page)
                 if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                     view.cacheDisplay(in: view.bounds, to: rep)
@@ -1663,24 +1750,22 @@ func gaugeColor(_ frac: CGFloat) -> NSColor {
     return GB_RED
 }
 
-let battleClawdColors: [Character: NSColor] = [
-    "K": GB_INK,
-    "L": NSColor(srgbRed: 0xE8/255, green: 0x9A/255, blue: 0x74/255, alpha: 1),
-    "B": NSColor(srgbRed: 0xD9/255, green: 0x77/255, blue: 0x57/255, alpha: 1),
-    "D": NSColor(srgbRed: 0xA6/255, green: 0x47/255, blue: 0x2E/255, alpha: 1),
-]
+// Claude's battle colors now come from the selected skin (skin(id:).battleColors);
+// the "default" skin reproduces the original orange.
 
-/// Gastly's palette: a dark core wrapped in purple gas. 'B' is the gas (three
-/// tones, shaded), 'C' the near-black core, 'W'/'P' the eyes, 'T' the fangs.
+/// A ghost monster's palette: a dark core wrapped in purple gas. 'B' is the gas
+/// (three tones, shaded), 'C' the near-black core, 'G' its gray highlight, 'W'
+/// the eyes, 'R' the red marks, 'M' the tongue.
 let bugColors: [Character: NSColor] = [
     "K": GB_INK,
     "L": NSColor(srgbRed: 0xB0/255, green: 0x80/255, blue: 0xD8/255, alpha: 1),  // gas highlight
     "B": NSColor(srgbRed: 0x88/255, green: 0x58/255, blue: 0xB0/255, alpha: 1),  // gas
     "D": NSColor(srgbRed: 0x58/255, green: 0x30/255, blue: 0x78/255, alpha: 1),  // gas shadow
-    "C": NSColor(srgbRed: 0x28/255, green: 0x20/255, blue: 0x38/255, alpha: 1),  // core
+    "C": NSColor(srgbRed: 0x30/255, green: 0x2C/255, blue: 0x3A/255, alpha: 1),  // core
+    "G": NSColor(srgbRed: 0x9A/255, green: 0x96/255, blue: 0xA4/255, alpha: 1),  // core highlight
     "W": NSColor.white,
-    "P": GB_INK,                                                                 // pupil
-    "T": NSColor.white,                                                          // fangs
+    "R": NSColor(srgbRed: 0xC8/255, green: 0x3A/255, blue: 0x30/255, alpha: 1),  // anger marks
+    "M": NSColor(srgbRed: 0xE0/255, green: 0x88/255, blue: 0xB0/255, alpha: 1),  // tongue
 ]
 
 /// The opponent: a "computer bug", drawn in the Gen-2 idiom — a big head with
@@ -1688,34 +1773,34 @@ let bugColors: [Character: NSColor] = [
 /// silhouette readable at a glance. Cute, but with fangs and horns so it still
 /// reads as the thing eating your usage limit.
 ///
-/// The opponent, styled after Gen-1 Gastly (고오스): a near-black core floating
-/// inside a ragged cloud of purple gas, with big white eyes and bared fangs.
-/// 22 wide x 20 tall.
+/// The opponent: an original ghost monster — a dark core floating inside a
+/// ragged cloud of purple gas, with angular white eyes, red anger marks, and a
+/// lolling tongue. 22 wide x 20 tall.
 ///
-/// The eyes, fangs and core are spelled out as their own characters rather than
-/// left as body cells: `battleShaded` only re-tones 'B', so anything that must
-/// keep its own color has to be written here or the gradient washes over it.
+/// Eyes, marks, tongue, highlight and core are each their own character rather
+/// than left as body cells: `battleShaded` only re-tones 'B', so anything that
+/// must keep its own color has to be written here or the gradient washes over it.
 let bugBase: [String] = [
-    "....K....KK....K......",   // gas wisps licking upward
-    "...KBK..KBBK..KBK.....",
-    "..KBBBKKBBBBKKBBBK.K..",
-    ".KBBBBBBBBBBBBBBBBBKBK",
-    "KBBBBKKKKKKKKKKKKBBBBK",   // gas opens to reveal the core
-    "KBBBKCCCCCCCCCCCCKBBBK",
-    "KBBKCCCCCCCCCCCCCCKBBK",
-    "KBKCCCWWCCCCCCWWCCCKBK",   // big eyes, corners knocked off so they read round
-    "KBKCCWWWWCCCCWWWWCCKBK",
-    "KBKCCWPPWCCCCWPPWCCKBK",
-    "KBKCCCWWCCCCCCWWCCCKBK",
-    "KBKCCCCCCCCCCCCCCCCKBK",
-    "KBKCTTTTTTTTTTTTTTCKBK",   // the grin: a solid band of white…
-    "KBBKCTCTCTCTCTCTCTKBBK",   // …that fangs bite down out of
-    "KBBBKCCCCCCCCCCCCKBBBK",
-    "KBBBBKKKKKKKKKKKKBBBBK",
-    ".KBBBBBBBBBBBBBBBBBBK.",
-    "K.KBBBKKBBBKKBBBKKBK.K",   // gas trailing off underneath
-    "..K.KBK..KBK..KBK.K...",
-    "....K.....K.....K.....",
+    "....B....BB.....B.....",   // gas wisps licking upward
+    "..B.BB..BBBB...BB.B...",
+    "..BBBBKKKKKKKKKKBBBB..",
+    ".BBBKKGGGGGGGGGGKKBBB.",
+    ".BBKKGGCCCCCCCCGGKKBB.",
+    "BBKGGCCCCCCCCCCCCGGKBB",
+    "BKGCCCWWWCCCCWWWCCCGKB",   // angular eyes
+    "BKGCCWWWWCCCCWWWWCCCKB",
+    "BKCCCWWRCCCCCCWWRCCCKB",   // red marks beside the eyes
+    "BKCCCCRRCCCCCCRRCCCCKB",
+    "BKGCCCCCCCCCCCCCCCCCKB",
+    "BKGCCCCCCCCCCCCCCCCKBB",
+    ".BKCCCCCMMMMMMCCCCCKB.",   // tongue
+    ".BBKCCCCMMMMMMCCCCKBB.",
+    "..BBKKCCCCCCCCCCKKBB..",
+    "..BBBBKKKKKKKKKKBBBB..",
+    ".BBB.BBBBBBBBBBBB.BBB.",
+    "..B..BBBKKBBKKBBB..B..",   // gas trailing off underneath
+    "..B..KBK..KBK..KBK.B..",
+    ".....K.....K....K.....",
 ]
 
 /// Light comes from the top-left. Each body ('B') cell's tone follows a diagonal
@@ -1769,13 +1854,14 @@ let BATTLE_ENEMY_LEVEL = 50
 /// Which page of the 2x2 menu is showing. Choosing 사용량/기능 swaps only the
 /// dialogue box; the battle scene above it stays put.
 enum BattleScreen {
-    case root, usage, more
+    case root, usage, more, skins
 
     var message: String {
         switch self {
         case .root:  return "무엇을 할까?"
         case .usage: return "어떤 한도를 볼까?"
         case .more:  return "어떤 걸 해볼까?"
+        case .skins: return "누구로 바꿀까?"
         }
     }
 }
@@ -1788,8 +1874,9 @@ struct BattleItem {
 }
 
 enum BattleAction {
-    case openUsage, openMore, back
+    case openUsage, openMore, openSkins, back
     case pickLimit(String)      // limit `kind`
+    case pickSkin(String)       // skin `id`
     case toggleCompact
     case checkUpdate
     case refresh
@@ -1808,9 +1895,14 @@ final class BattleView: NSView {
     var selectedKind: String
     /// Whether compact mode is on — drawn as a ✓ next to 간결 모드.
     var compactOn: Bool
+    /// The chosen skin's id, and how many pets so far (gates the shiny).
+    var skinID: String
+    var petCount: Int
 
     /// Actions are performed by the app delegate; the view only draws and routes.
     var perform: (BattleAction) -> Void = { _ in }
+    /// Called when Escape/back is pressed at the root — closes the panel.
+    var onDismiss: () -> Void = {}
 
     var screen: BattleScreen = .root
     var cursor = 0
@@ -1830,14 +1922,21 @@ final class BattleView: NSView {
     static let bugDriftX: CGFloat = 16        // max px from center, horizontally
     static let bugDriftY: CGFloat = 13        // less vertical room: indicators
 
-    init(frame: NSRect, usedPercent: Int, limits: [Limit], selectedKind: String, compactOn: Bool) {
+    init(frame: NSRect, usedPercent: Int, limits: [Limit], selectedKind: String,
+         compactOn: Bool, skinID: String, petCount: Int) {
         self.usedPercent = usedPercent
         self.limits = limits
         self.selectedKind = selectedKind
         self.compactOn = compactOn
+        self.skinID = skinID
+        self.petCount = petCount
         super.init(frame: frame)
         wantsLayer = true
     }
+
+    /// This account's skin as chosen; and which skins are pickable right now.
+    var skinColors: [Character: NSColor] { skin(id: skinID).battleColors }
+    func isUnlocked(_ s: ClawdSkin) -> Bool { petCount >= s.unlockPets }
     required init?(coder: NSCoder) { fatalError("not used") }
 
     /// Start/stop the animation with the view's presence on screen, so a closed
@@ -1915,7 +2014,7 @@ final class BattleView: NSView {
         case .root:
             return [
                 BattleItem(title: "사용량 선택", action: .openUsage),
-                BattleItem(title: "색상 커스텀", action: .none, enabled: false),
+                BattleItem(title: "색상 커스텀", action: .openSkins),
                 BattleItem(title: "기능 더보기", action: .openMore),
                 BattleItem(title: "종료하기", action: .quit),
             ]
@@ -1937,16 +2036,28 @@ final class BattleView: NSView {
                 BattleItem(title: "새로고침", action: .refresh),
                 BattleItem(title: "뒤로", action: .back),
             ]
+        case .skins:
+            return []   // the skin picker draws its own grid, not a 2x2 menu
         }
     }
 
-    /// The full menu labels ("세션 (5시간)") do not fit a cell, so shorten them.
+    /// The six skins, in party order.
+    var skinCells: [ClawdSkin] { ALL_SKINS }
+
+    /// The full menu labels ("세션 (5시간)") do not fit a cell, so shorten them
+    /// to the period each limit covers.
     private func shortLabel(for l: Limit) -> String {
         switch l.kind {
-        case "session":       return "5시간"
-        case "weekly_all":    return "주간"
-        case "weekly_scoped": return l.scopeName ?? "주간 범위"
-        default:              return l.kind
+        case "session":    return "5시간"
+        case "weekly_all": return "7일"
+        case "weekly_scoped":
+            // The scope name is a model name from the API (e.g. "Fable").
+            // Transliterate the ones we know; otherwise show what the API gave.
+            let ko = ["Fable": "페이블", "Opus": "오퍼스", "Sonnet": "소네트", "Haiku": "하이쿠"]
+            let n = l.scopeName ?? "7일"
+            return ko[n] ?? n
+        default:
+            return l.kind
         }
     }
 
@@ -1963,6 +2074,9 @@ final class BattleView: NSView {
         let outer = NSBezierPath(roundedRect: r.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
         outer.fill()
         GB_INK.setStroke(); outer.lineWidth = 2; outer.stroke()
+
+        // The skin picker takes the whole panel, like the party screen.
+        if screen == .skins { drawSkinPicker(); return }
 
         // Battle area first, dialog box over it: that is what crops Claude's legs.
         drawBattleArea(NSRect(x: r.minX, y: r.minY + dialogH,
@@ -1995,7 +2109,7 @@ final class BattleView: NSView {
                             width: playerBox.minX - area.minX, height: enemyBox.minY - area.minY)
         drawSprite(pGrid, origin: NSPoint(x: pField.midX - pSize.width / 2,
                                           y: pField.midY - pSize.height / 2 - 45 + bob),
-                   cell: pCell, colors: battleClawdColors)
+                   cell: pCell, colors: skinColors)
 
         drawIndicator(enemyBox, name: BATTLE_ENEMY_NAME, level: BATTLE_ENEMY_LEVEL,
                       frac: 1, isPlayer: false)
@@ -2017,10 +2131,10 @@ final class BattleView: NSView {
             attributes: [.font: pixelFont(14), .foregroundColor: GB_INK]))
         let ts = title.size()
 
-        let bandW: CGFloat = 7.5
-        let lineH: CGFloat = 1.5
-        let arrowW: CGFloat = 10
-        let arrowH: CGFloat = 7
+        let bandW: CGFloat = 9.5
+        let lineH: CGFloat = 2.5
+        let arrowW: CGFloat = 11
+        let arrowH: CGFloat = 8
         let lineY = box.minY
 
         let unitH: CGFloat = 12
@@ -2030,11 +2144,11 @@ final class BattleView: NSView {
             ? NSRect(x: box.minX + 8, y: unitY, width: box.width - 8 - bandW + 1, height: unitH)
             : NSRect(x: box.minX + bandW - 1, y: unitY, width: box.width - bandW - 3, height: unitH)
 
-        // The name ends where the HP unit's black box ends, on both sides. Anchor
-        // to the unit, not the box: the two frames are mirrored and inset
-        // differently, so the gauge is the only landmark they share.
-        // (Starting the name *at* unit.maxX would push Claude's off the panel.)
-        title.draw(at: NSPoint(x: unit.maxX - ts.width, y: box.maxY - ts.height))
+        // The name starts where the gauge starts — i.e. just past the black
+        // "HP:" cap, above the boundary between the cap and the bar. labelW is
+        // the cap's width, so unit.minX + labelW is the gauge's left edge.
+        let gaugeStartX = unit.minX + labelW
+        title.draw(at: NSPoint(x: gaugeStartX, y: box.maxY - ts.height))
 
         NSGraphicsContext.current?.saveGraphicsState()
         NSGraphicsContext.current?.shouldAntialias = false
@@ -2117,6 +2231,75 @@ final class BattleView: NSView {
                       width: w, height: h)
     }
 
+    // ── Skin picker (party-style screen)
+
+    /// A locked skin shows as a flat gray silhouette so its color stays a surprise.
+    private var lockedColors: [Character: NSColor] {
+        ["K": GB_INK, "B": rgb(0x6A, 0x66, 0x72), "D": rgb(0x6A, 0x66, 0x72), "L": rgb(0x6A, 0x66, 0x72)]
+    }
+
+    /// Area the 3x2 skin grid fills, below the title row.
+    private var skinGrid: NSRect {
+        let m: CGFloat = 12, titleH: CGFloat = 30
+        return NSRect(x: bounds.minX + m, y: bounds.minY + m,
+                      width: bounds.width - m * 2, height: bounds.height - m * 2 - titleH)
+    }
+    func skinRect(_ i: Int) -> NSRect {
+        let colsN = 3, rowsN = 2, gap: CGFloat = 8
+        let cw = (skinGrid.width - gap * CGFloat(colsN - 1)) / CGFloat(colsN)
+        let ch = (skinGrid.height - gap * CGFloat(rowsN - 1)) / CGFloat(rowsN)
+        let col = i % colsN, row = i / colsN
+        return NSRect(x: skinGrid.minX + CGFloat(col) * (cw + gap),
+                      y: skinGrid.maxY - CGFloat(row + 1) * ch - CGFloat(row) * gap,
+                      width: cw, height: ch)
+    }
+
+    private func drawSkinPicker() {
+        let titleAttr: [NSAttributedString.Key: Any] = [.font: pixelFont(Self.itemFontSize),
+                                                        .foregroundColor: GB_INK]
+        let title = screen.message as NSString
+        let th = title.size(withAttributes: titleAttr).height
+        title.draw(at: NSPoint(x: bounds.minX + 18, y: bounds.maxY - 12 - th), withAttributes: titleAttr)
+
+        let hint = "Esc: 뒤로" as NSString
+        let hintAttr: [NSAttributedString.Key: Any] = [.font: pixelFont(12),
+                                                       .foregroundColor: GB_INK.withAlphaComponent(0.5)]
+        let hs = hint.size(withAttributes: hintAttr)
+        hint.draw(at: NSPoint(x: bounds.maxX - 18 - hs.width, y: bounds.maxY - 12 - hs.height),
+                  withAttributes: hintAttr)
+
+        let miniGrid = spriteGrids[.healthy]![0]
+        let miniCell: CGFloat = 2.6
+        let miniSize = spriteSize(miniGrid, cell: miniCell)
+
+        for (i, s) in skinCells.enumerated() {
+            let cell = skinRect(i)
+            let selected = (s.id == skinID)
+            let focused = (i == cursor)
+            let unlocked = isUnlocked(s)
+
+            let boxPath = NSBezierPath(roundedRect: cell, xRadius: 6, yRadius: 6)
+            (selected ? NSColor.white : GB_BG).setFill(); boxPath.fill()
+            GB_INK.setStroke(); boxPath.lineWidth = focused ? 3 : 1.5; boxPath.stroke()
+
+            drawSprite(miniGrid,
+                       origin: NSPoint(x: cell.midX - miniSize.width / 2, y: cell.maxY - miniSize.height - 12),
+                       cell: miniCell, colors: unlocked ? s.battleColors : lockedColors)
+
+            let name = (unlocked ? s.name : "？？？") as NSString
+            let nameAttr: [NSAttributedString.Key: Any] = [
+                .font: pixelFont(14),
+                .foregroundColor: unlocked ? GB_INK : GB_INK.withAlphaComponent(0.4)]
+            let ns = name.size(withAttributes: nameAttr)
+            name.draw(at: NSPoint(x: cell.midX - ns.width / 2, y: cell.minY + 9), withAttributes: nameAttr)
+
+            if selected {
+                ("✓" as NSString).draw(at: NSPoint(x: cell.minX + 8, y: cell.maxY - 22),
+                                       withAttributes: [.font: pixelFont(15), .foregroundColor: GB_INK])
+            }
+        }
+    }
+
     private func drawDialogBox(_ box: NSRect) {
         GB_BG.setFill()
         let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
@@ -2167,16 +2350,23 @@ final class BattleView: NSView {
         return all.firstIndex(where: { $0.enabled }) ?? 0
     }
 
+    /// Columns in the current screen's grid: the skin picker is 3-wide, the menus 2.
+    private var cols: Int { screen == .skins ? 3 : 2 }
+    private var cellCount: Int { screen == .skins ? skinCells.count : items.count }
+
     func go(to screen: BattleScreen) {
         self.screen = screen
-        // Entering 사용량 starts the cursor on the limit already being tracked.
-        if screen == .usage,
-           let i = items.firstIndex(where: {
-               if case .pickLimit(let k) = $0.action { return k == selectedKind }
-               return false
-           }) {
-            cursor = i
-        } else {
+        switch screen {
+        case .usage:
+            // Start the cursor on the limit already being tracked.
+            cursor = items.firstIndex {
+                if case .pickLimit(let k) = $0.action { return k == selectedKind }
+                return false
+            } ?? firstEnabled(from: 0)
+        case .skins:
+            // Start on the skin already worn.
+            cursor = skinCells.firstIndex { $0.id == skinID } ?? 0
+        default:
             cursor = firstEnabled(from: 0)
         }
         needsDisplay = true
@@ -2184,15 +2374,22 @@ final class BattleView: NSView {
 
     override func keyDown(with e: NSEvent) {
         var next = cursor
+        let c = cols
         switch e.keyCode {
-        case 126: if cursor >= 2 { next = cursor - 2 }        // ↑
-        case 125: if cursor < 2  { next = cursor + 2 }        // ↓
-        case 123: if cursor % 2 == 1 { next = cursor - 1 }    // ←
-        case 124: if cursor % 2 == 0 { next = cursor + 1 }    // →
-        case 36, 76: activate(); return                        // Enter
+        case 126: if cursor - c >= 0 { next = cursor - c }                  // ↑
+        case 125: if cursor + c < cellCount { next = cursor + c }           // ↓
+        case 123: if cursor % c != 0 { next = cursor - 1 }                  // ←
+        case 124: if cursor % c != c - 1 && cursor + 1 < cellCount { next = cursor + 1 }  // →
+        case 36, 76: activate(); return                                     // Enter
+        case 53:                                                            // Esc
+            if screen == .root { onDismiss() } else { go(to: .root) }
+            return
         default: super.keyDown(with: e); return
         }
-        if items.indices.contains(next), items[next].enabled { cursor = next }
+        // In the menus, skip disabled cells; in the picker every cell is landable.
+        if screen == .skins || (items.indices.contains(next) && items[next].enabled) {
+            cursor = next
+        }
         needsDisplay = true
     }
 
@@ -2201,6 +2398,12 @@ final class BattleView: NSView {
 
     private func hover(_ e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
+        if screen == .skins {
+            for i in skinCells.indices where skinRect(i).contains(p) {
+                if cursor != i { cursor = i; needsDisplay = true }
+            }
+            return
+        }
         let all = items
         for i in all.indices where itemRect(i).contains(p) && all[i].enabled {
             if cursor != i { cursor = i; needsDisplay = true }
@@ -2208,11 +2411,18 @@ final class BattleView: NSView {
     }
 
     private func activate() {
+        if screen == .skins {
+            guard skinCells.indices.contains(cursor) else { return }
+            let s = skinCells[cursor]
+            if isUnlocked(s) { perform(.pickSkin(s.id)) }   // locked ⇒ no-op
+            return
+        }
         let all = items
         guard all.indices.contains(cursor), all[cursor].enabled else { return }
         switch all[cursor].action {
         case .openUsage: go(to: .usage)
         case .openMore:  go(to: .more)
+        case .openSkins: go(to: .skins)
         case .back:      go(to: .root)
         case .none:      break
         default:         perform(all[cursor].action)
