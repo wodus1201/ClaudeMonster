@@ -32,6 +32,12 @@ let APP_VERSION = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? 
 /// the menu answers it with instructions instead of a bare error line.
 let NO_TOKEN_ERROR = "로그인 토큰 없음"
 
+/// Sentinel error meaning the token exists but the server rejected it (HTTP 401)
+/// — the OAuth access token has expired. Claude Code refreshes it whenever it
+/// runs, so overnight (CLI unused) the token lapses and this widget sees a 401.
+/// Answered with re-auth guidance, same as NO_TOKEN_ERROR.
+let EXPIRED_TOKEN_ERROR = "로그인 만료"
+
 // The app was called "ClaudeBattery" before 1.2. These two names are HISTORICAL
 // — they identify what an older install left behind, not what we are now — so a
 // future rename must not touch them or the cleanup below silently stops working.
@@ -197,9 +203,20 @@ struct ClawdSkin {
         c["D"] = shadow
         return c
     }
-    /// Battle sprite is shaded into three tones (L/B/D) over a black outline.
+    /// The outline, as a deepened version of the skin's own shadow rather than
+    /// black: a hard black keyline reads as a sticker pasted onto the scene, and
+    /// the widget already outlines Claude in dark orange ('D' in spriteColors).
+    /// Derived, not hand-picked, so every skin — and any skin added later — gets
+    /// an outline that matches its body instead of one more color to keep in sync.
+    var outline: NSColor {
+        let c = shadow.usingColorSpace(.sRGB) ?? shadow
+        return NSColor(srgbRed: c.redComponent * 0.55,
+                       green: c.greenComponent * 0.55,
+                       blue: c.blueComponent * 0.55, alpha: 1)
+    }
+    /// Battle sprite is shaded into three tones (L/B/D) over that tinted outline.
     var battleColors: [Character: NSColor] {
-        ["K": GB_INK, "L": highlight, "B": base, "D": shadow]
+        ["K": outline, "L": highlight, "B": base, "D": shadow]
     }
 }
 
@@ -211,18 +228,18 @@ let PETS_TO_SHINY = 50
 /// sprite, not taken from any existing game's data.
 let ALL_SKINS: [ClawdSkin] = [
     ClawdSkin(id: "default", name: "클로드",
-              highlight: rgb(0xE8,0x9A,0x74), base: rgb(0xD9,0x77,0x57), shadow: rgb(0xA6,0x47,0x2E)),
+              highlight: rgb(0xF5,0xB8,0x95), base: rgb(0xD9,0x77,0x57), shadow: rgb(0xA6,0x47,0x2E)),
     ClawdSkin(id: "shiny", name: "이로치",
-              highlight: rgb(0xF7,0xE2,0xA0), base: rgb(0xF0,0xC2,0x52), shadow: rgb(0xBE,0x86,0x2E),
+              highlight: rgb(0xFC,0xF0,0xC0), base: rgb(0xF0,0xC2,0x52), shadow: rgb(0xBE,0x86,0x2E),
               unlockPets: PETS_TO_SHINY),
     ClawdSkin(id: "opus", name: "오퍼스",
-              highlight: rgb(0xB6,0x8C,0xDE), base: rgb(0x88,0x58,0xB0), shadow: rgb(0x57,0x30,0x80)),
+              highlight: rgb(0xCF,0xAC,0xF0), base: rgb(0x88,0x58,0xB0), shadow: rgb(0x57,0x30,0x80)),
     ClawdSkin(id: "sonnet", name: "소네트",
-              highlight: rgb(0x7C,0xB2,0xEA), base: rgb(0x4A,0x82,0xC8), shadow: rgb(0x2C,0x54,0x90)),
+              highlight: rgb(0x9E,0xD0,0xF8), base: rgb(0x4A,0x82,0xC8), shadow: rgb(0x2C,0x54,0x90)),
     ClawdSkin(id: "haiku", name: "하이쿠",
-              highlight: rgb(0x94,0xDA,0x94), base: rgb(0x58,0xB0,0x5A), shadow: rgb(0x30,0x80,0x36)),
+              highlight: rgb(0xB4,0xEE,0xB0), base: rgb(0x58,0xB0,0x5A), shadow: rgb(0x30,0x80,0x36)),
     ClawdSkin(id: "fable", name: "페이블",
-              highlight: rgb(0xF2,0xA2,0xCA), base: rgb(0xD8,0x60,0xA0), shadow: rgb(0xA0,0x38,0x70)),
+              highlight: rgb(0xFA,0xC2,0xE0), base: rgb(0xD8,0x60,0xA0), shadow: rgb(0xA0,0x38,0x70)),
 ]
 
 func skin(id: String) -> ClawdSkin { ALL_SKINS.first { $0.id == id } ?? ALL_SKINS[0] }
@@ -377,6 +394,10 @@ func fetchUsage(completion: @escaping (UsageResult) -> Void) {
         }
         if http.statusCode == 429 {
             completion(UsageResult(error: "요청이 많아 잠시 대기 중", rateLimited: true)); return
+        }
+        // 401/403: the token is present but rejected — expired access token.
+        if http.statusCode == 401 || http.statusCode == 403 {
+            completion(UsageResult(error: EXPIRED_TOKEN_ERROR)); return
         }
         guard http.statusCode == 200, let data = data else {
             completion(UsageResult(error: "HTTP \(http.statusCode)")); return
@@ -854,6 +875,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             3. 이 메뉴에서 "다시 시도"를 누릅니다
 
             Claude Code가 설치돼 있지 않다면 claude.com/claude-code 를 참고하세요.
+            """
+        a.addButton(withTitle: "확인")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
+    /// Menu action: shown on a 401 — the token expired and needs refreshing.
+    @objc func showReauthHelp() {
+        let a = NSAlert()
+        a.messageText = "로그인이 만료됐어요"
+        a.informativeText = """
+            Claude Code 로그인 토큰은 약 8시간마다 만료되고, Claude Code를 \
+            실행하면 자동으로 갱신됩니다. 밤새 Claude Code를 쓰지 않으면 토큰이 \
+            만료돼 이 위젯에 401 오류가 뜰 수 있어요.
+
+            갱신하려면:
+            1. 터미널에서 claude 를 한 번 실행합니다 (로그인돼 있으면 자동 갱신됨)
+            2. 이 메뉴에서 "다시 시도"를 누릅니다
             """
         a.addButton(withTitle: "확인")
         NSApp.activate(ignoringOtherApps: true)
@@ -1585,6 +1624,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                  action: #selector(showLoginHelp), keyEquivalent: "")
             how.target = self
             menu.addItem(how)
+        } else if msg == EXPIRED_TOKEN_ERROR {
+            // Token lapsed. Running Claude Code once refreshes it; say so.
+            let item = NSMenuItem(title: "로그인이 만료됐습니다", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            let how = NSMenuItem(title: "갱신하는 방법 보기…",
+                                 action: #selector(showReauthHelp), keyEquivalent: "")
+            how.target = self
+            menu.addItem(how)
         } else {
             let item = NSMenuItem(title: "오류: \(msg)", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -1757,50 +1805,98 @@ func gaugeColor(_ frac: CGFloat) -> NSColor {
 /// (three tones, shaded), 'C' the near-black core, 'G' its gray highlight, 'W'
 /// the eyes, 'R' the red marks, 'M' the tongue.
 let bugColors: [Character: NSColor] = [
-    "K": GB_INK,
-    "L": NSColor(srgbRed: 0xB0/255, green: 0x80/255, blue: 0xD8/255, alpha: 1),  // gas highlight
-    "B": NSColor(srgbRed: 0x88/255, green: 0x58/255, blue: 0xB0/255, alpha: 1),  // gas
-    "D": NSColor(srgbRed: 0x58/255, green: 0x30/255, blue: 0x78/255, alpha: 1),  // gas shadow
-    "C": NSColor(srgbRed: 0x30/255, green: 0x2C/255, blue: 0x3A/255, alpha: 1),  // core
-    "G": NSColor(srgbRed: 0x9A/255, green: 0x96/255, blue: 0xA4/255, alpha: 1),  // core highlight
-    "W": NSColor.white,
-    "R": NSColor(srgbRed: 0xC8/255, green: 0x3A/255, blue: 0x30/255, alpha: 1),  // anger marks
-    "M": NSColor(srgbRed: 0xE0/255, green: 0x88/255, blue: 0xB0/255, alpha: 1),  // tongue
+    ".": .clear,
+
+    // Outline
+    "K": NSColor(srgbRed: 0x1F/255, green: 0x24/255, blue: 0x18/255, alpha: 1),
+
+    // Body (다크 올리브)
+    "D": NSColor(srgbRed: 0x4B/255, green: 0x5A/255, blue: 0x2E/255, alpha: 1),
+
+    // Highlight (연두 광택)
+    "G": NSColor(srgbRed: 0xB8/255, green: 0xD9/255, blue: 0x7A/255, alpha: 1),
+
+    // Face
+    "W": .white,
+
+    // Orange (더듬이/집게)
+    "O": NSColor(srgbRed: 0xE0/255, green: 0x8A/255, blue: 0x2E/255, alpha: 1),
+
+    // Mouth (붉은 반점)
+    "L": NSColor(srgbRed: 0xD9/255, green: 0x5A/255, blue: 0x4A/255, alpha: 1),
+
+    // Wing Aura (이끼 그린)
+    "P": NSColor(srgbRed: 0x6F/255, green: 0xA8/255, blue: 0x3E/255, alpha: 1),
+
+    // Wing Aura (shadow)
+    "S": NSColor(srgbRed: 0x4E/255, green: 0x7A/255, blue: 0x2A/255, alpha: 1),
+
+    // Mouth (muted edge)
+    "M": NSColor(srgbRed: 0xB0/255, green: 0x6E/255, blue: 0x5A/255, alpha: 1),
 ]
 
-/// The opponent: a "computer bug", drawn in the Gen-2 idiom — a big head with
-/// big eyes over a small body, everything wrapped in a black outline, and the
-/// silhouette readable at a glance. Cute, but with fangs and horns so it still
-/// reads as the thing eating your usage limit.
+/// Easter egg: the bug repainted as a ladybug (무당벌레). Keyed identically to
+/// bugColors, so it is a pure palette swap over the same bugBase grid — no cells
+/// are added or moved. Retune these RGBs freely; only the keys must stay in sync
+/// with bugColors, or a glyph the grid uses would render as nothing.
 ///
-/// The opponent: an original ghost monster — a dark core floating inside a
-/// ragged cloud of purple gas, with angular white eyes, red anger marks, and a
-/// lolling tongue. 22 wide x 20 tall.
-///
-/// Eyes, marks, tongue, highlight and core are each their own character rather
-/// than left as body cells: `battleShaded` only re-tones 'B', so anything that
-/// must keep its own color has to be written here or the gradient washes over it.
+/// Unlocked by clicking the enemy's black HP plate seven times: the Korean
+/// ladybug is 칠성무당벌레 — the seven-spotted one.
+let LADYBUG_CLICKS = 7
+
+let ladybugColors: [Character: NSColor] = [
+    ".": .clear,
+
+    // Outline (가장 어두운 빨강)
+    "K": NSColor(srgbRed: 0x40/255, green: 0x0C/255, blue: 0x0A/255, alpha: 1),
+
+    // Body (어두운 빨강 — Wing Shell보다 어둡게)
+    "D": NSColor(srgbRed: 0x7A/255, green: 0x16/255, blue: 0x13/255, alpha: 1),
+
+    // Highlight (광택)
+    "G": NSColor(srgbRed: 0xF4/255, green: 0xA6/255, blue: 0xA0/255, alpha: 1),
+
+    // Face
+    "W": .white,
+
+    // Antenna / Spots (검은 반점)
+    "O": NSColor(srgbRed: 0x1F/255, green: 0x1F/255, blue: 0x1F/255, alpha: 1),
+
+    // Mouth (검은 반점 포인트)
+    "L": NSColor(srgbRed: 0x2A/255, green: 0x2A/255, blue: 0x2A/255, alpha: 1),
+
+    // Wing Shell (중간 빨강)
+    "P": NSColor(srgbRed: 0xB8/255, green: 0x24/255, blue: 0x1F/255, alpha: 1),
+
+    // Wing Shell (shadow, Body보다는 밝고 Wing Shell보다는 어둡게)
+    "S": NSColor(srgbRed: 0x94/255, green: 0x20/255, blue: 0x1B/255, alpha: 1),
+
+    // Mouth (muted edge)
+    "M": NSColor(srgbRed: 0xE6/255, green: 0x7A/255, blue: 0x73/255, alpha: 1),
+]
+
 let bugBase: [String] = [
-    "....B....BB.....B.....",   // gas wisps licking upward
-    "..B.BB..BBBB...BB.B...",
-    "..BBBBKKKKKKKKKKBBBB..",
-    ".BBBKKGGGGGGGGGGKKBBB.",
-    ".BBKKGGCCCCCCCCGGKKBB.",
-    "BBKGGCCCCCCCCCCCCGGKBB",
-    "BKGCCCWWWCCCCWWWCCCGKB",   // angular eyes
-    "BKGCCWWWWCCCCWWWWCCCKB",
-    "BKCCCWWRCCCCCCWWRCCCKB",   // red marks beside the eyes
-    "BKCCCCRRCCCCCCRRCCCCKB",
-    "BKGCCCCCCCCCCCCCCCCCKB",
-    "BKGCCCCCCCCCCCCCCCCKBB",
-    ".BKCCCCCMMMMMMCCCCCKB.",   // tongue
-    ".BBKCCCCMMMMMMCCCCKBB.",
-    "..BBKKCCCCCCCCCCKKBB..",
-    "..BBBBKKKKKKKKKKBBBB..",
-    ".BBB.BBBBBBBBBBBB.BBB.",
-    "..B..BBBKKBBKKBBB..B..",   // gas trailing off underneath
-    "..B..KBK..KBK..KBK.B..",
-    ".....K.....K....K.....",
+    "...........SS.S.........", // 00
+    "...........SS...........", // 01
+    ".......SSS.....SS..SS...", // 02
+    ".....SSPPPSSS.SPPS.SS...", // 03
+    "....SPPPKKKKPPPPPPS.....", // 04
+    "....SPKKDDDDKKPPPPS.....", // 05
+    "...KSKDDDDDDDDKPPS......", // 06
+    "..KWKDDDDDDDDDDKPS.SS...", // 07
+    "..KWDDDDDDDDDDDKPPSPPS..", // 08
+    "..KWWKDDDDDDDWDDKPPPPS..", // 09
+    "SSKWPKDKDDDWWWDDKPPPS..S", // 10
+    "SSKWPWDKDWWWWWKDKPPS.SS.", // 11
+    "SSPKWDDDWPWWWWKDKPPS.SS.", // 12
+    "..SSKDDKWPWWWKDKPPPPS...", // 13
+    "....KDDDKWWWDDDKPPPPS...", // 14
+    "...SPKMMMDDDMDKPPPPS....", // 15
+    "...SPPKKLLM.KKPSPPS.....", // 16
+    "....SPPPKKKGKPS.SS......", // 17
+    ".....SPPSSPKSS..........", // 18
+    "......SS..SS...SS.......", // 19
+    "...............SS.......", // 20
 ]
 
 /// Light comes from the top-left. Each body ('B') cell's tone follows a diagonal
@@ -1833,13 +1929,54 @@ func battleShaded(_ grid: [String], flatten: Bool = false) -> [String] {
     }
 }
 
-/// Claude from behind: the front-facing grid with the face left off, so the
-/// silhouette can never drift from the widget's. Nothing else is added — real
-/// Gen-2 back sprites carry no spine seam, and without a face this already
-/// reads as a back.
-func clawdBackGrid() -> [String] {
-    battleShaded(clawdBase)
-}
+/// Claude from behind, hand-shaded. 24x21 — the bug's density, so the two sprites
+/// read as the same era instead of the widget's 20x14 grid blown up beside it.
+///
+/// This no longer derives from clawdBase. The widget grid is drawn for a 22px
+/// menu bar and only ever loses its face here, which left the back as a flat
+/// blob next to the bug. Shape (silhouette, ears, the neck crease, where the
+/// limbs clear the body) is now authored here and is deliberately NOT synced to
+/// the widget. Color still is: the glyphs are exactly the four ClawdSkin.battleColors
+/// keys, so every skin recolors this for free.
+///   K = outline · L = lit (upper-left) · B = base · D = shadow (lower-right)
+/// Adding a fifth glyph would render as nothing — battleColors has no key for it.
+///
+/// Light comes from the upper-left, so L hugs the top-left curve of the head and
+/// back, D pools along the lower-right and under the head where it overhangs the
+/// body. Gen-2 backs are lit this way and carry no spine seam.
+///
+/// The arms are held out to the sides, as in the Clawd mascot — short, stubby,
+/// and clear of the body so the silhouette reads as a pose rather than a slab.
+/// They are the widest part of the sprite, so the body is narrowed to make room
+/// for them inside the same 24 columns.
+///
+/// Rows 18-20 (the lower body) are drawn but never seen: the dialog box crops
+/// them, exactly as a Gen-2 back sprite is cropped at the waist. That is intended
+/// — do not raise the sprite to reveal them.
+let clawdBackBase: [String] = [
+    "........KKKKKKKKK.........", // 00  ear tips
+    "......KKLLLLBBBDDKK.......", // 01  near ear is lit, far ear sits in shade
+    ".....KKLLLBBBBBBDDDKK.....", // 02  ears meet the head
+    "....KKLLLBBBBBBBBBDDDK....", // 03  back of the head: L mass upper-left,
+    "....KLLLBBBBBBBBBBBDDDK...", // 04  D mass lower-right, B between them
+    "....KLLBBBBBBBBBBBBBDDK...", // 05
+    "....KLLBBBBBBBBBBBBBDDK...", // 06
+    "....KLLBBBBBBBBBBBBBDDK...", // 07  neck crease: shadow pools under the head
+    "....KLLBBBBBBBBBBBBBDDK...", // 08  shoulders
+    ".KKKKLLBBBBBBBBBBBBDDKKKK.", // 09  Arms spread wide. The near arm is lit and is
+    "KLLLKLLBBBBBBBBBBBBDDDDDDK", // 10  cut from the torso by a K seam; the far arm has
+    "KLLBKLLBBBBBBBBBBBBDDDDDDK", // 11  no seam and is filled entirely with D.
+    "KKBBKLLLBBBBBBBBBBBDDDDDDK", // 12  Light comes from the upper-left, so the far arm
+    ".KKKKLLLBBBBBBBBBBBDDKKKK.", // 13  can never be brighter than the shadow it sits in.
+    "....KLLLBBBBBBBBBBBBDDDK..", // 14
+    "....KLLLBBBBBBBBBBBBDDDK..", // 15
+    "....KLLLBBBBBBBBBBBBDDDK..", // 16
+    ".....KLLBKKBBKKBBKKBDDK...", // 17  underside: three gaps cut four legs, as in
+    ".....KLLBKKLBKKBDKKBDDK...", // 18  the widget grid (clawdBase rows 12-13) —
+    "......KKKKKKKKKKKKKKKK....", // 19  Clawd has four, not two. Below the crop line.
+]
+
+func clawdBackGrid() -> [String] { clawdBackBase }
 
 func spriteSize(_ grid: [String], cell: CGFloat) -> NSSize {
     NSSize(width: CGFloat(grid[0].count) * cell, height: CGFloat(grid.count) * cell)
@@ -1921,6 +2058,17 @@ final class BattleView: NSView {
     private var bugTarget = NSPoint.zero
     static let bugDriftX: CGFloat = 16        // max px from center, horizontally
     static let bugDriftY: CGFloat = 13        // less vertical room: indicators
+
+    // ── Easter egg: 무당벌레
+    /// The enemy's black HP plate, recorded while drawing it (the same trick the
+    /// widget's sprite hitbox uses) so mouseDown can hit-test it without
+    /// recomputing the indicator layout.
+    private var enemyHPRect = NSRect.zero
+    private var hpClicks = 0
+    /// Purely cosmetic and deliberately not persisted: closing the panel resets
+    /// the bug, so finding it again is part of the joke.
+    private var ladybug = false
+    var bugPalette: [Character: NSColor] { ladybug ? ladybugColors : bugColors }
 
     init(frame: NSRect, usedPercent: Int, limits: [Limit], selectedKind: String,
          compactOn: Bool, skinID: String, petCount: Int) {
@@ -2093,15 +2241,21 @@ final class BattleView: NSView {
         // Sprites are centered in whatever space the indicators leave, so changing
         // an indicator's size moves the sprite with it instead of stranding it.
         // The bug floats around that center; Claude hops in place.
-        let eGrid = battleShaded(bugBase, flatten: true)
+        // bugBase already carries hand-placed shading (D/G/B tones), so it is
+        // drawn as-is. battleShaded would re-tone the 'B' body cells by light
+        // direction and fight that hand shading.
+        let eGrid = bugBase
         let eCell: CGFloat = 4.0
         let eSize = spriteSize(eGrid, cell: eCell)
         let eField = NSRect(x: enemyBox.maxX, y: playerBox.maxY,
                             width: area.maxX - enemyBox.maxX, height: area.maxY - playerBox.maxY)
         drawSprite(eGrid, origin: NSPoint(x: eField.midX - eSize.width / 2 - 9 + bugOffset.x,
                                           y: eField.midY - eSize.height / 2 - 10 + bugOffset.y),
-                   cell: eCell, colors: bugColors)
+                   cell: eCell, colors: bugPalette)
 
+        // The dialog box swallowing the lower body is intentional — Gen-2 back
+        // sprites are cropped at the waist the same way, so do not "fix" this by
+        // raising the sprite. The grid below the crop line is drawn but never seen.
         let pGrid = clawdBackGrid()
         let pCell: CGFloat = 5.8
         let pSize = spriteSize(pGrid, cell: pCell)
@@ -2149,6 +2303,10 @@ final class BattleView: NSView {
         // the cap's width, so unit.minX + labelW is the gauge's left edge.
         let gaugeStartX = unit.minX + labelW
         title.draw(at: NSPoint(x: gaugeStartX, y: box.maxY - ts.height))
+
+        // The enemy's plate is the easter egg's hit target; remember where it
+        // landed so mouseDown does not have to redo this layout.
+        if !isPlayer { enemyHPRect = unit }
 
         NSGraphicsContext.current?.saveGraphicsState()
         NSGraphicsContext.current?.shouldAntialias = false
@@ -2394,7 +2552,29 @@ final class BattleView: NSView {
     }
 
     override func mouseMoved(with e: NSEvent) { hover(e) }
-    override func mouseDown(with e: NSEvent) { hover(e); activate() }
+
+    override func mouseDown(with e: NSEvent) {
+        if tapEnemyHP(e) { return }
+        hover(e); activate()
+    }
+
+    /// Easter egg. The enemy's HP plate sits in the battle area, where no menu
+    /// cell can claim the click, so counting taps here steals nothing.
+    /// The skin picker replaces the whole panel, so the plate is not on screen
+    /// then and the stale rect must not be hit-tested.
+    private func tapEnemyHP(_ e: NSEvent) -> Bool {
+        guard screen != .skins else { return false }
+        let p = convert(e.locationInWindow, from: nil)
+        guard enemyHPRect.contains(p) else { return false }
+
+        hpClicks += 1
+        if hpClicks >= LADYBUG_CLICKS {
+            hpClicks = 0
+            ladybug.toggle()
+            needsDisplay = true
+        }
+        return true
+    }
 
     private func hover(_ e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
