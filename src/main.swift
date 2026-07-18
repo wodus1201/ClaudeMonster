@@ -731,7 +731,7 @@ func label(for l: Limit) -> String {
 
 /// Color by remaining headroom (traffic light).
 func color(remaining frac: Double) -> NSColor {
-    if frac >= 0.5 { return NSColor.systemGreen }
+    if frac >= 0.5 { return GB_GREEN }   // match the battle gauge's green
     if frac >= 0.2 { return NSColor.systemOrange }
     return NSColor.systemRed
 }
@@ -817,6 +817,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Battle screen: the drop-down panel a left-click opens.
     var battlePanel: BattlePanel?
     var battleMonitor: Any?          // dismisses the panel on a click elsewhere
+    var battleClosedAt: Date?        // when the panel last closed, so a status-item
+                                     // click that both dismissed AND re-triggered
+                                     // buttonClicked doesn't immediately reopen it
 
     // Text-slot timing (seconds)
     let TIME_HOLD = 5.0             // how long the reset-countdown shows
@@ -1487,7 +1490,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Battle panel
 
     func toggleBattlePanel(_ sender: NSStatusBarButton) {
-        if battlePanel != nil { closeBattlePanel() } else { openBattlePanel(sender) }
+        if battlePanel != nil { closeBattlePanel(); return }
+        // If the global monitor just closed the panel from this very click, don't
+        // reopen — clicking the status item while open should close, not re-toggle.
+        if let t = battleClosedAt, Date().timeIntervalSince(t) < 0.3 { return }
+        openBattlePanel(sender)
     }
 
     func openBattlePanel(_ button: NSStatusBarButton) {
@@ -1611,6 +1618,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Clear the reference first: the animation outlives this call, and a
         // click landing mid-fade would otherwise toggle against a dying panel.
         battlePanel = nil
+        battleClosedAt = Date()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.09
             panel.animator().alphaValue = 0
@@ -1960,7 +1968,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 /// sprite; we keep that constraint (highlight / base / shadow + black outline).
 let GB_BG      = NSColor(white: 0.90, alpha: 1)   // same pill gray as the widget
 let GB_INK     = NSColor(srgbRed: 0.10, green: 0.10, blue: 0.11, alpha: 1)
-let GB_GREEN   = NSColor(srgbRed: 0x38/255, green: 0xD0/255, blue: 0x30/255, alpha: 1)
+let GB_GREEN   = NSColor(srgbRed: 0x40/255, green: 0xB9/255, blue: 0x3E/255, alpha: 1)
 let GB_ORANGE  = NSColor(srgbRed: 0xF8/255, green: 0xA8/255, blue: 0x28/255, alpha: 1)
 let GB_RED     = NSColor(srgbRed: 0xE8/255, green: 0x30/255, blue: 0x30/255, alpha: 1)
 let GB_EXP     = NSColor(srgbRed: 0x40/255, green: 0x90/255, blue: 0xE8/255, alpha: 1)
