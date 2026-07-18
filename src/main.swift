@@ -1583,7 +1583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .quit:
             closeBattlePanel()
             NSApp.terminate(nil)
-        case .openUsage, .openMore, .openSkins, .openBattle, .back, .none:
+        case .openUsage, .openMore, .openSkins, .openBattle, .tackle, .back, .none:
             break                            // handled inside the view
         }
     }
@@ -2085,6 +2085,33 @@ let bugBase: [String] = [
     "...............SS.......", // 20
 ]
 
+/// The bug taking a hit: its left eye squeezes shut (the white sliver becomes body
+/// with a dark lid line) and its mouth closes to a single dark line. Same grid size
+/// and glyphs as bugBase, so it is a drop-in swap while the hit flash plays.
+let bugHurtBase: [String] = [
+    "...........SS.S.........", // 00
+    "...........SS...........", // 01
+    ".......SSS.....SS..SS...", // 02
+    ".....SSPPPSSS.SPPS.SS...", // 03
+    "....SPPPKKKKPPPPPPS.....", // 04
+    "....SPKKDDDDKKPPPPS.....", // 05
+    "...KSKDDDDDDDDKPPS......", // 06
+    "..KKDDDDDDDDDDDKPS.SS...", // 07
+    "..KDDDDDDDDDDDDKPPSPPS..", // 08
+    "..KKDKDDDDDDDDDDKPPPPS..", // 09
+    "SSKWKKDKDDDDWWDDKPPPS..S", // 10
+    "SSKWPDDKDDWWWWKDKPPS.SS.", // 11
+    "SSPKWKDDDPWWWWKDKPPS.SS.", // 12
+    "..SSKDDKWPWWWKDKPPPPS...", // 13
+    "....KDDDKWWWDDDKPPPPS...", // 14
+    "...SPKKKKKKKDDKPPPPS....", // 15
+    "...SPPKKDDDDKKPSPPS.....", // 16
+    "....SPPPKKKKKPS.SS......", // 17
+    ".....SPPSSPKSS..........", // 18
+    "......SS..SS...SS.......", // 19
+    "...............SS.......", // 20
+]
+
 /// Light comes from the top-left. Each body ('B') cell's tone follows a diagonal
 /// gradient (horizontal position within its row + vertical position overall),
 /// and only the cells where two tones meet get checkerboard-dithered.
@@ -2198,6 +2225,7 @@ struct BattleItem {
 
 enum BattleAction {
     case openUsage, openMore, openSkins, openBattle, back
+    case tackle                 // 몸통박치기 — animated entirely inside the view
     case pickLimit(String)      // limit `kind`
     case pickSkin(String)       // skin `id`
     case toggleCompact
@@ -2279,11 +2307,54 @@ final class BattleView: NSView {
     private var playerSpriteRect = NSRect.zero
     var isShiny: Bool { skin(id: skinID).isRare }
 
-    /// The enemy bug's level and remaining HP fraction, rolled fresh each time a
-    /// battle panel opens (a new BattleView is built per open). Purely cosmetic —
-    /// unrelated to the account's real usage, which only drives the player's side.
+    /// The enemy bug's level and HP, rolled fresh each time a battle panel opens
+    /// (a new BattleView is built per open). Purely cosmetic — unrelated to the
+    /// account's real usage, which only drives the player's side.
     let enemyLevel = Int.random(in: 2...60)
-    let enemyFrac = CGFloat.random(in: 0.2...1.0)
+    static let enemyMaxHP = 100
+    private var enemyHP = Int.random(in: 20...BattleView.enemyMaxHP)
+    var enemyFrac: CGFloat { CGFloat(enemyHP) / CGFloat(Self.enemyMaxHP) }
+
+    // ── 몸통박치기 (tackle)
+    /// Frame counter for the attack animation; -1 when idle. Driven by step(), so
+    /// the whole sequence runs on the existing 12fps timer.
+    private var attackTick = -1
+    /// A tackle that cannot land (the bug is down to its last HP) plays the lunge
+    /// but never flashes the bug — it just reports the miss.
+    private var attackMissed = false
+    /// Ticks: 0-2 lunge out and back (one tick per leg, so the swing reads fast),
+    /// 3-10 the hit flash (2 blinks).
+    private static let lungeEnd = 3
+    private static let flashEnd = 11
+
+    /// Claude's lunge toward the upper right, then back.
+    private var attackOffset: NSPoint {
+        switch attackTick {
+        case 0:  return NSPoint(x: 6, y: 5)
+        case 1:  return NSPoint(x: 12, y: 10)
+        case 2:  return NSPoint(x: 6, y: 5)
+        default: return .zero
+        }
+    }
+    /// Retro hit flash: the bug blanks for two ticks, shows for two, twice.
+    private var bugHidden: Bool {
+        guard !attackMissed, attackTick >= Self.lungeEnd, attackTick < Self.flashEnd else { return false }
+        return ((attackTick - Self.lungeEnd) / 2) % 2 == 0
+    }
+    /// The squeezed-shut face holds for the whole flash, not just the visible frames.
+    private var bugHurting: Bool {
+        !attackMissed && attackTick >= Self.lungeEnd && attackTick < Self.flashEnd
+    }
+
+    /// Start a tackle. Damage is random but never more than half the bug's remaining
+    /// HP, so it can never be knocked out; at 1 HP nothing can land and it misses.
+    func startTackle() {
+        guard attackTick < 0 else { return }        // ignore re-entry mid-swing
+        let maxDamage = enemyHP / 2
+        attackMissed = maxDamage < 1
+        attackTick = 0
+        needsDisplay = true
+    }
 
     func startSparkle() {
         guard isShiny else { return }
@@ -2336,6 +2407,25 @@ final class BattleView: NSView {
     private func step() {
         tick += 1
 
+        // Tackle: advance the swing. Damage lands the moment the flash starts, so
+        // the gauge drops in step with the blinking.
+        var attacking = false
+        if attackTick >= 0 {
+            attackTick += 1
+            attacking = true
+            if attackTick == Self.lungeEnd {
+                if attackMissed {
+                    flashLines = ["클로드의 공격이", "빗나갔다!"]
+                    flashUntil = Date().addingTimeInterval(LADYBUG_FLASH_HOLD)
+                    attackTick = -1                  // nothing left to animate
+                } else {
+                    enemyHP -= Int.random(in: 1...(enemyHP / 2))
+                }
+            } else if attackTick >= Self.flashEnd {
+                attackTick = -1                      // swing over
+            }
+        }
+
         // Claude hops in a 4px arc. A sine gives the arc; rounding keeps it on
         // the pixel grid, so the sprite never lands on a half-pixel and blurs.
         let phase = Double(tick % 24) / 24.0
@@ -2365,7 +2455,7 @@ final class BattleView: NSView {
         // partial repaint fiddly), so only ask for one when something moved.
         let moved = newBob != bob || abs(dx) + abs(dy) > 0.05
         bob = newBob
-        if moved || sparkling || flashExpired { needsDisplay = true }
+        if moved || sparkling || flashExpired || attacking { needsDisplay = true }
     }
 
     deinit { animTimer?.invalidate() }
@@ -2404,9 +2494,8 @@ final class BattleView: NSView {
                 BattleItem(title: "종료하다", action: .quit),
             ]
         case .battle:
-            // Placeholder submenu — items to be decided later.
             return [
-                BattleItem(title: "—", action: .none, enabled: false),
+                BattleItem(title: "몸통박치기", action: .tackle),
                 BattleItem(title: "—", action: .none, enabled: false),
                 BattleItem(title: "—", action: .none, enabled: false),
                 BattleItem(title: "뒤로가다", action: .back),
@@ -2489,14 +2578,18 @@ final class BattleView: NSView {
         // bugBase already carries hand-placed shading (D/G/B tones), so it is
         // drawn as-is. battleShaded would re-tone the 'B' body cells by light
         // direction and fight that hand shading.
-        let eGrid = bugBase
+        // While a tackle lands the bug wears the squeezed-shut face and blinks out
+        // entirely on alternating frames — the Gen-2 hit flash.
+        let eGrid = bugHurting ? bugHurtBase : bugBase
         let eCell: CGFloat = 4.0
         let eSize = spriteSize(eGrid, cell: eCell)
         let eField = NSRect(x: enemyBox.maxX, y: playerBox.maxY,
                             width: area.maxX - enemyBox.maxX, height: area.maxY - playerBox.maxY)
-        drawSprite(eGrid, origin: NSPoint(x: eField.midX - eSize.width / 2 - 9 + bugOffset.x,
-                                          y: eField.midY - eSize.height / 2 - 10 + bugOffset.y),
-                   cell: eCell, colors: bugPalette)
+        if !bugHidden {
+            drawSprite(eGrid, origin: NSPoint(x: eField.midX - eSize.width / 2 - 9 + bugOffset.x,
+                                              y: eField.midY - eSize.height / 2 - 10 + bugOffset.y),
+                       cell: eCell, colors: bugPalette)
+        }
 
         // The dialog box swallowing the lower body is intentional — Gen-2 back
         // sprites are cropped at the waist the same way, so do not "fix" this by
@@ -2506,8 +2599,9 @@ final class BattleView: NSView {
         let pSize = spriteSize(pGrid, cell: pCell)
         let pField = NSRect(x: area.minX, y: area.minY,
                             width: playerBox.minX - area.minX, height: enemyBox.minY - area.minY)
-        let pOrigin = NSPoint(x: pField.midX - pSize.width / 2,
-                              y: pField.midY - pSize.height / 2 - 45 + bob)
+        // attackOffset lunges Claude toward the upper right during a tackle.
+        let pOrigin = NSPoint(x: pField.midX - pSize.width / 2 + attackOffset.x,
+                              y: pField.midY - pSize.height / 2 - 45 + bob + attackOffset.y)
         drawSprite(pGrid, origin: pOrigin, cell: pCell, colors: skinColors)
         playerSpriteRect = NSRect(origin: pOrigin, size: pSize)
 
@@ -3002,6 +3096,7 @@ final class BattleView: NSView {
         case .openMore:   go(to: .more)
         case .openSkins:  go(to: .skins)
         case .openBattle: go(to: .battle)
+        case .tackle:     startTackle()
         case .back:       go(to: .root)
         case .none:      break
         default:         perform(all[cursor].action)
