@@ -1869,7 +1869,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         // All menu pages, stacked, so a design change can be checked at once.
         // The skin picker is shown with the shiny unlocked so its cell renders.
-        let pages: [BattleScreen] = [.root, .battle, .usage, .more, .skins]
+        // CLAUDEMONSTER_ONEPAGE=1 dumps only the root page, so indicator tweaks can
+        // be zoomed without the tall five-page stack.
+        let pages: [BattleScreen] = ProcessInfo.processInfo.environment["CLAUDEMONSTER_ONEPAGE"] != nil
+            ? [.root]
+            : [.root, .battle, .usage, .more, .skins]
         let gap: CGFloat = 10
         let size = NSSize(width: BATTLE_W, height: (BATTLE_H + gap) * CGFloat(pages.count) - gap)
         let img = NSImage(size: size, flipped: false) { rect in
